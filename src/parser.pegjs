@@ -39,6 +39,7 @@
     isPostgresql,
     hasParamType,
     isEnabledWhitespace,
+    isAcceptUnsupportedGrammar,
   } from "./utils/parserState";
   import { isReservedKeyword } from "./utils/keywords";
   import { loc } from "./utils/loc";
@@ -62,6 +63,14 @@ program
   }
 
 statement
+  = non_transaction_statement
+  / transaction_statement  // match BEGIN transaction after BEGIN..END block
+  / &{ return isAcceptUnsupportedGrammar(); } x:unsupported_grammar_stmt { return x; }
+
+// This is referenced by BEGIN..END blocks of FUNCTION definitions,
+// which don't allow transactions inside them (specifically it would create a conflict
+// with BEGIN..END keywords which are also used with transactions)
+non_transaction_statement
   = dml_statement
   / ddl_statement
   / dcl_statement
@@ -69,12 +78,12 @@ statement
   / &mysql x:statement_mysql { return x; }
   / &bigquery x:statement_bigquery { return x; }
   / &postgres x:statement_postgres { return x; }
-  / transaction_statement // math BEGIN transaction after BEGIN..END block
 
 statement_sqlite
   = analyze_stmt
   / explain_stmt
   / sqlite_statement
+
 
 statement_mysql
   = proc_statement
@@ -148,6 +157,7 @@ ddl_statement_postgres
   / alter_sequence_stmt
   / drop_sequence_stmt
   / create_trigger_stmt
+  / alter_trigger_stmt
   / drop_trigger_stmt
   / create_type_stmt
   / alter_type_stmt
@@ -155,6 +165,14 @@ ddl_statement_postgres
   / create_domain_stmt
   / alter_domain_stmt
   / drop_domain_stmt
+  / create_role_stmt
+  / alter_role_stmt
+  / drop_role_stmt
+  / set_role_stmt
+  / reset_role_stmt
+  / create_policy_stmt
+  / alter_policy_stmt
+  / drop_policy_stmt
 
 dml_statement
   = compound_select_stmt
@@ -183,8 +201,10 @@ inner_program
     });
   }
 
+// PostgreSQL allows no transactions inside BEGIN..END blocks
 inner_program_statement
-  = statement
+  = &postgres x:non_transaction_statement { return x; }
+  / !postgres x:statement { return x; }
   / &postgres x:return_stmt { return x; }
 
 /**
@@ -896,6 +916,7 @@ grouping_element
   = group_by_rollup
   / group_by_cube
   / group_by_grouping_sets
+  / group_by_all &bigquery
   / paren$empty_list
   / expr
 
@@ -923,6 +944,14 @@ group_by_grouping_sets
       type: "group_by_grouping_sets",
       groupingSetsKw: read(kw),
       columns,
+    });
+  }
+
+group_by_all
+  = kw:ALL {
+    return loc({
+      type: "group_by_all",
+      allKw: read(kw),
     });
   }
 
@@ -2740,7 +2769,7 @@ alter_action_drop_column
     }
 
 alter_action_rename
-  = kw:(rename_table_kw __) t:entity_name {
+  = kw:(rename_action_kw __) t:entity_name {
     return loc({
       type: "alter_action_rename",
       renameKw: read(kw),
@@ -2748,7 +2777,7 @@ alter_action_rename
     });
   }
 
-rename_table_kw
+rename_action_kw
   = kw:(RENAME __ TO) { return read(kw); }
   / kw:(RENAME __ AS) &only_mysql { return read(kw); }
   / kw:RENAME &mysql { return kw; }
@@ -2822,7 +2851,7 @@ alter_action_reset_postgresql_options
 
 alter_action_add_constraint
   = kw:(ADD __) name:(alter_action_add_constraint_constraint_name __)?
-    constraint:table_constraint_type
+    constraint:(table_constraint_type / x:constraint_not_null &postgres { return x; })
     modifiers:(__ constraint_modifier)* {
       return loc({
         type: "alter_action_add_constraint",
@@ -3435,7 +3464,7 @@ trigger_event
     }
 
 trigger_target
-  = onKw:(__ ON __) table:entity_name {
+  = onKw:(ON __) table:entity_name {
     return loc({
       type: "trigger_target",
       onKw: read(onKw),
@@ -3542,9 +3571,27 @@ trigger_program
     });
   }
 
+// ALTER TRIGGER
+alter_trigger_stmt
+  = kw:(ALTER __ TRIGGER __) trigger:(ident __) target:(trigger_target __) action:alter_trigger_action {
+    return loc({
+      type: "alter_trigger_stmt",
+      alterTriggerKw: read(kw),
+      trigger: read(trigger),
+      target: read(target),
+      action: action,
+    });
+  }
+
+alter_trigger_action
+  = alter_action_rename
+  / alter_action_depends_on_extension
+  / alter_action_no_depends_on_extension
+
 // DROP TRIGGER
 drop_trigger_stmt
-  = kw:(DROP __ TRIGGER __)
+  = (&mysql / &sqlite)
+    kw:(DROP __ TRIGGER __)
     ifKw:(if_exists __)?
     trigger:entity_name {
       return loc({
@@ -3552,6 +3599,21 @@ drop_trigger_stmt
         dropTriggerKw: read(kw),
         ifExistsKw: read(ifKw),
         trigger,
+      });
+    }
+  / &postgres
+    kw:(DROP __ TRIGGER __)
+    ifKw:(if_exists __)?
+    trigger:entity_name
+    target:(__ trigger_target)?
+    behaviorKw:(__ (CASCADE / RESTRICT))? {
+      return loc({
+        type: "drop_trigger_stmt",
+        dropTriggerKw: read(kw),
+        ifExistsKw: read(ifKw),
+        trigger,
+        target: read(target),
+        behaviorKw: read(behaviorKw),
       });
     }
 
@@ -3596,6 +3658,8 @@ schema_scoped_statement
     / create_view_stmt
     / create_index_stmt
     / create_sequence_stmt
+    / create_trigger_stmt
+    / grant_stmt
   ) { return x; }
 
 drop_schema_stmt
@@ -3678,6 +3742,15 @@ create_function_stmt
         clauses: clauses.map(read),
       });
     }
+
+function_signature
+  = name:entity_name params:(__ (paren$list$func_param / paren$empty_list))? {
+    return loc({
+      type: "function_signature",
+      name: read(name),
+      params: read(params),
+    });
+  }
 
 func_param
   = &bigquery name:(ident __) type:data_type {
@@ -4371,6 +4444,301 @@ drop_domain_stmt
 /**
  * ------------------------------------------------------------------------------------ *
  *                                                                                      *
+ * CREATE/ALTER/DROP ROLE                                                               *
+ *                                                                                      *
+ * ------------------------------------------------------------------------------------ *
+ */
+create_role_stmt
+  = kw:(CREATE __ (ROLE / USER / GROUP) __) name:entity_name withKw:(__ WITH)? options:(__ role_option)* {
+    return loc({
+      type: "create_role_stmt",
+      createRoleKw: read(kw),
+      name,
+      withKw: read(withKw),
+      options: options.map(read),
+    });
+  }
+
+role_option
+  = role_option_keyword
+  / role_option_connection_limit
+  / role_option_password
+  / role_option_valid_until
+  / role_option_in_role
+  / role_option_role
+  / role_option_admin
+  / role_option_sysid
+
+role_option_keyword
+  = kw:(
+    SUPERUSER / NOSUPERUSER /
+    CREATEDB / NOCREATEDB /
+    CREATEROLE / NOCREATEROLE /
+    INHERIT / NOINHERIT /
+    LOGIN / NOLOGIN /
+    REPLICATION / NOREPLICATION /
+    BYPASSRLS / NOBYPASSRLS
+  ) {
+    return loc({ type: "role_option_keyword", kw: read(kw) });
+  }
+
+role_option_connection_limit
+  = kw:(CONNECTION __ LIMIT __) limit:number_literal {
+    return loc({ type: "role_option_connection_limit", connectionLimitKw: read(kw), limit });
+  }
+
+role_option_password
+  = encryptedKw:(ENCRYPTED __)? kw:(PASSWORD __) password:(string_literal / null_literal) {
+    return loc({
+      type: "role_option_password",
+      encryptedKw: read(encryptedKw),
+      passwordKw: read(kw),
+      password,
+    });
+  }
+
+role_option_valid_until
+  = kw:(VALID __ UNTIL __) timestamp:string_literal {
+    return loc({ type: "role_option_valid_until", validUntilKw: read(kw), timestamp });
+  }
+
+role_option_in_role
+  = kw:(IN __ ROLE __) names:list$role_specification {
+    return loc({ type: "role_option_in_role", inRoleKw: read(kw), names });
+  }
+
+role_option_role
+  = kw:(ROLE __) names:list$role_specification {
+    return loc({ type: "role_option_role", roleKw: read(kw), names });
+  }
+
+role_option_admin
+  = kw:(ADMIN __) names:list$role_specification {
+    return loc({ type: "role_option_admin", adminKw: read(kw), names });
+  }
+
+role_option_sysid
+  = kw:(SYSID __) sysId:number_literal {
+    return loc({ type: "role_option_sysid", sysIdKw: read(kw), sysId });
+  }
+
+alter_role_stmt
+  = kw:(ALTER __ (ROLE / USER / GROUP) __)
+    name:((role_specification / ALL) __)
+    database:(in_database_clause __)?
+    action:alter_role_action {
+      return loc({
+        type: "alter_role_stmt",
+        alterRoleKw: read(kw),
+        name: read(name),
+        database: read(database),
+        action,
+      });
+    }
+
+in_database_clause
+  = kw:(IN __ DATABASE __) name:ident {
+    return loc({ type: "in_database_clause", inDatabaseKw: read(kw), name });
+  }
+
+alter_role_action
+  = alter_action_with_role_options
+  / alter_action_rename
+  / alter_action_set_postgresql_option
+  / alter_action_set_postgresql_option_from_current
+  / alter_action_reset_postgresql_option
+  / alter_action_add_user
+  / alter_action_drop_user
+
+alter_action_with_role_options
+  = kw:WITH options:(__ role_option)+ {
+    return loc({
+      type: "alter_action_with_role_options",
+      withKw: kw,
+      options: options.map(read),
+    });
+  }
+  / option:role_option options:(__ role_option)* {
+    return loc({
+      type: "alter_action_with_role_options",
+      options: [option, ...options.map(read)],
+    });
+  }
+
+alter_action_set_postgresql_option
+  = kw:(SET __) name:(ident __) operator:("=" / TO) value:(__ (expr / keyword)) {
+    return loc({
+      type: "alter_action_set_postgresql_option",
+      setKw: read(kw),
+      name: read(name),
+      operator,
+      value: read(value),
+    });
+  }
+
+alter_action_set_postgresql_option_from_current
+  = kw:(SET __) name:(ident __) fromCurrentKw:(FROM __ CURRENT) {
+    return loc({
+      type: "alter_action_set_postgresql_option_from_current",
+      setKw: read(kw),
+      name: read(name),
+      fromCurrentKw: read(fromCurrentKw),
+    });
+  }
+
+alter_action_reset_postgresql_option
+  = kw:(RESET __) name:(ident / ALL) {
+    return loc({
+      type: "alter_action_reset_postgresql_option",
+      resetKw: read(kw),
+      name,
+    });
+  }
+
+alter_action_add_user
+  = kw:(ADD __ USER __) users:list$ident {
+    return loc({
+      type: "alter_action_add_user",
+      addUserKw: read(kw),
+      users,
+    });
+  }
+
+alter_action_drop_user
+  = kw:(DROP __ USER __) users:list$ident {
+    return loc({
+      type: "alter_action_drop_user",
+      dropUserKw: read(kw),
+      users,
+    });
+  }
+
+drop_role_stmt
+  = kw:(DROP __ (ROLE / USER / GROUP) __) ifExistsKw:(if_exists __)? names:list$role_specification {
+    return loc({
+      type: "drop_role_stmt",
+      dropRoleKw: read(kw),
+      ifExistsKw: read(ifExistsKw),
+      names,
+    });
+  }
+
+set_role_stmt
+  = kw:(SET __) scopeKw:((SESSION / LOCAL) __)? roleKw:(ROLE __) name:(NONE / ident / string_literal) {
+    return loc({
+      type: "set_role_stmt",
+      setKw: read(kw),
+      scopeKw: read(scopeKw),
+      roleKw: read(roleKw),
+      name,
+    });
+  }
+
+reset_role_stmt
+  = kw:(RESET __ ROLE) {
+    return loc({ type: "reset_role_stmt", resetRoleKw: read(kw) });
+  }
+
+/**
+ * ------------------------------------------------------------------------------------ *
+ *                                                                                      *
+ * CREATE/ALTER/DROP POLICY                                                             *
+ *                                                                                      *
+ * ------------------------------------------------------------------------------------ *
+ */
+create_policy_stmt
+  = kw:(CREATE __ POLICY __) name:(ident __) onKw:(ON __) table:entity_name
+    clauses:(__ create_policy_clause)* {
+      return loc({
+        type: "create_policy_stmt",
+        createPolicyKw: read(kw),
+        name: read(name),
+        onKw: read(onKw),
+        table,
+        clauses: clauses.map(read),
+      });
+    }
+
+create_policy_clause
+  = policy_permissive_clause
+  / policy_restrictive_clause
+  / policy_command_clause
+  / policy_roles_clause
+  / policy_using_clause
+  / policy_check_clause
+
+policy_permissive_clause
+  = asKw:(AS __) permissiveKw:PERMISSIVE {
+    return loc({
+      type: "policy_permissive_clause",
+      asKw: read(asKw),
+      permissiveKw,
+    });
+  }
+
+policy_restrictive_clause
+  = asKw:(AS __) restrictiveKw:RESTRICTIVE {
+    return loc({
+      type: "policy_restrictive_clause",
+      asKw: read(asKw),
+      restrictiveKw,
+    });
+  }
+
+policy_command_clause
+  = kw:(FOR __) commandKw:(ALL / SELECT / INSERT / UPDATE / DELETE) {
+    return loc({ type: "policy_command_clause", forKw: read(kw), commandKw });
+  }
+
+policy_roles_clause
+  = kw:(TO __) roles:list$grantee {
+    return loc({ type: "policy_roles_clause", toKw: read(kw), roles });
+  }
+
+policy_using_clause
+  = kw:(USING __) expr:paren$expr {
+    return loc({ type: "policy_using_clause", usingKw: read(kw), expr });
+  }
+
+policy_check_clause
+  = withKw:(WITH __) checkKw:(CHECK __) expr:paren$expr {
+    return loc({ type: "policy_check_clause", withKw: read(withKw), checkKw: read(checkKw), expr });
+  }
+
+alter_policy_stmt
+  = kw:(ALTER __ POLICY __) name:(ident __) onKw:(ON __) table:entity_name actions:(__ alter_policy_action)+ {
+    return loc({
+      type: "alter_policy_stmt",
+      alterPolicyKw: read(kw),
+      name: read(name),
+      onKw: read(onKw),
+      table,
+      actions: actions.map(read),
+    });
+  }
+
+alter_policy_action
+  = alter_action_rename
+  / policy_roles_clause
+  / policy_using_clause
+  / policy_check_clause
+
+drop_policy_stmt
+  = kw:(DROP __ POLICY __) ifExistsKw:(if_exists __)? name:(ident __) onKw:(ON __) table:entity_name behaviorKw:(__ (CASCADE / RESTRICT))? {
+    return loc({
+      type: "drop_policy_stmt",
+      dropPolicyKw: read(kw),
+      ifExistsKw: read(ifExistsKw),
+      name: read(name),
+      onKw: read(onKw),
+      table,
+      behaviorKw: read(behaviorKw),
+    });
+  }
+
+/**
+ * ------------------------------------------------------------------------------------ *
+ *                                                                                      *
  * ANALYZE                                                                              *
  *                                                                                      *
  * ------------------------------------------------------------------------------------ *
@@ -4431,11 +4799,12 @@ start_transaction_stmt
       transactionKw: read(tKw),
     });
   }
-  / &postgres kw:BEGIN tKw:(__ (TRANSACTION / WORK))? {
+  / &postgres kw:BEGIN tKw:(__ (TRANSACTION / WORK))? modes:(__ list$transaction_mode)? {
     return loc({
       type: "start_transaction_stmt",
       startKw: kw,
       transactionKw: read(tKw),
+      modes: read(modes),
     });
   }
   / &mysql kw:BEGIN tKw:(__ WORK)? {
@@ -4445,36 +4814,87 @@ start_transaction_stmt
       transactionKw: read(tKw),
     });
   }
-  / (&mysql / &postgres) kw:START tKw:(__ TRANSACTION) {
+  / (&mysql / &postgres) kw:START tKw:(__ TRANSACTION) modes:(__ list$transaction_mode)? {
     return loc({
       type: "start_transaction_stmt",
       startKw: kw,
       transactionKw: read(tKw),
+      modes: read(modes),
     });
   }
 
+transaction_mode
+  = transaction_mode_deferrable
+  / transaction_mode_not_deferrable
+  / transaction_mode_read_write
+  / transaction_mode_read_only
+  / transaction_mode_isolation_level
+
+transaction_mode_deferrable
+  = kw:(DEFERRABLE) {
+    return loc({ type: "transaction_mode_deferrable", deferrableKw: kw });
+  }
+
+transaction_mode_not_deferrable
+  = kw:(NOT __ DEFERRABLE) {
+    return loc({ type: "transaction_mode_not_deferrable", notDeferrableKw: read(kw) });
+  }
+
+transaction_mode_read_write
+  = kw:(READ __ WRITE) {
+    return loc({ type: "transaction_mode_read_write", readWriteKw: read(kw) });
+  }
+
+transaction_mode_read_only
+  = kw:(READ __ ONLY) {
+    return loc({ type: "transaction_mode_read_only", readOnlyKw: read(kw) });
+  }
+
+transaction_mode_isolation_level
+  = kw:(ISOLATION __ LEVEL __) levelKw:isolation_level_kw {
+    return loc({
+      type: "transaction_mode_isolation_level",
+      isolationLevelKw: read(kw),
+      levelKw: read(levelKw),
+    });
+  }
+
+isolation_level_kw
+  = SERIALIZABLE
+  / REPEATABLE __ READ
+  / READ __ COMMITTED
+  / READ __ UNCOMMITTED
+
 commit_transaction_stmt
-  = kw:commit_kw tKw:(__ transaction_kw)? {
+  = kw:commit_kw tKw:(__ transaction_kw)? chain:(__ transaction_chain_clause)? {
     return loc({
       type: "commit_transaction_stmt",
       commitKw: kw,
       transactionKw: read(tKw),
+      chain: read(chain),
     });
   }
 
 commit_kw
   = COMMIT
-  / kw:END &sqlite { return kw; }
+  / kw:END (&sqlite / &postgres) { return kw; }
 
 rollback_transaction_stmt
-  = kw:ROLLBACK tKw:(__ transaction_kw)? sp:(__ rollback_to_savepoint)? {
-    return loc({
-      type: "rollback_transaction_stmt",
-      rollbackKw: kw,
-      transactionKw: read(tKw),
-      savepoint: read(sp),
-    });
-  }
+  = kw:rollback_kw tKw:(__ transaction_kw)?
+    sp:(__ rollback_to_savepoint)?
+    chain:(__ transaction_chain_clause)? {
+      return loc({
+        type: "rollback_transaction_stmt",
+        rollbackKw: kw,
+        transactionKw: read(tKw),
+        savepoint: read(sp),
+        chain: read(chain),
+      });
+    }
+
+rollback_kw
+  = ROLLBACK
+  / &postgres x:ABORT { return x; }
 
 rollback_to_savepoint
   = toKw:(TO __) spKw:(SAVEPOINT __)? id:ident {
@@ -4487,11 +4907,11 @@ rollback_to_savepoint
   }
 
 transaction_kw
-  = kw:TRANSACTION (&sqlite / &bigquery) { return kw; }
-  / kw:WORK &mysql { return kw; }
+  = kw:TRANSACTION (&sqlite / &bigquery / &postgres) { return kw; }
+  / kw:WORK (&mysql / &postgres) { return kw; }
 
 savepoint_stmt
-  = (&mysql / &sqlite) spKw:(SAVEPOINT __) id:ident {
+  = (&mysql / &sqlite / &postgres) spKw:(SAVEPOINT __) id:ident {
     return loc({
       type: "savepoint_stmt",
       savepointKw: read(spKw),
@@ -4500,7 +4920,7 @@ savepoint_stmt
   }
 
 release_savepoint_stmt
-  = (&mysql / &sqlite) kw:(RELEASE __) spKw:(SAVEPOINT __)? id:ident {
+  = (&mysql / &sqlite / &postgres) kw:(RELEASE __) spKw:(SAVEPOINT __)? id:ident {
     return loc({
       type: "release_savepoint_stmt",
       releaseKw: read(kw),
@@ -4508,6 +4928,15 @@ release_savepoint_stmt
       savepoint: id,
     });
   }
+
+transaction_chain_clause
+  = kw:(AND __ CHAIN) {
+    return loc({ type: "transaction_chain_clause", andChainKw: read(kw) });
+  }
+  / kw:(AND __ NO __ CHAIN) {
+    return loc({ type: "transaction_no_chain_clause", andNoChainKw: read(kw) });
+  }
+
 
 /**
  * ------------------------------------------------------------------------------------ *
@@ -4517,45 +4946,229 @@ release_savepoint_stmt
  * ------------------------------------------------------------------------------------ *
  */
 dcl_statement
-  = &bigquery x:(grant_stmt / revoke_stmt) { return x; }
+  = (&bigquery / &postgres) x:(grant_stmt / revoke_stmt) { return x; }
 
 grant_stmt
-  = kw:(GRANT __) roles:(list$ident __)
-    onKw:(ON __) resType:(resource_type_kw __) resName:(entity_name __)
-    toKw:(TO __) users:(list$string_literal) {
+  = &postgres
+    kw:(GRANT __) privileges:((list$privilege / all_privileges) __)
+    onKw:(ON __) resource:(grant_resource_postgres __)
+    toKw:(TO __) roles:(list$grantee)
+    clauses:(__ grant_stmt_clause)* {
       return loc({
-        type: "grant_stmt",
+        type: "grant_privilege_stmt",
         grantKw: read(kw),
-        roles: read(roles),
+        privileges: read(privileges),
         onKw: read(onKw),
-        resourceType: read(resType),
-        resourceName: read(resName),
+        resource: read(resource),
         toKw: read(toKw),
-        users,
+        roles,
+        clauses: clauses.map(read),
       });
     }
+  / &bigquery
+    kw:(GRANT __) privileges:(list$ident __)
+    onKw:(ON __) resource:(grant_resource_bigquery __)
+    toKw:(TO __) roles:(list$string_literal) {
+      return loc({
+        type: "grant_privilege_stmt",
+        grantKw: read(kw),
+        privileges: read(privileges),
+        onKw: read(onKw),
+        resource: read(resource),
+        toKw: read(toKw),
+        roles,
+        clauses: [],
+      });
+    }
+  / &postgres
+    kw:(GRANT __) grantedRoles:(list$ident __)
+    toKw:(TO __) granteeRoles:list$grantee
+    clauses:(__ grant_stmt_clause)* {
+      return loc({
+        type: "grant_role_stmt",
+        grantKw: read(kw),
+        grantedRoles: read(grantedRoles),
+        toKw: read(toKw),
+        granteeRoles,
+        clauses: clauses.map(read),
+      });
+    }
+
+privilege
+  = kw:privilege_kw columns:(__ paren$list$ident)? {
+    return loc({ type: "privilege", privilegeKw: kw, columns: read(columns) });
+  }
+
+privilege_kw
+  = SELECT
+  / INSERT
+  / UPDATE
+  / DELETE
+  / TRUNCATE
+  / REFERENCES
+  / TRIGGER
+  / MAINTAIN
+  / USAGE
+  / CREATE
+  / CONNECT
+  / TEMPORARY
+  / TEMP
+  / SET
+  / EXECUTE
+  / kw:(ALTER __ SYSTEM) { return read(kw); }
+
+all_privileges
+  = allKw:ALL privilegesKw:(__ PRIVILEGES)? columns:(__ paren$list$ident)? {
+    return loc({
+      type: "all_privileges",
+      allKw: read(allKw),
+      privilegesKw: read(privilegesKw),
+      columns: read(columns),
+    });
+  }
+
+grant_resource_postgres
+  = kw:(ALL __ TABLES __ IN __ SCHEMA __) schemas:list$ident {
+    return loc({ type: "grant_resource_all_tables_in_schema", allTablesInSchemaKw: read(kw), schemas });
+  }
+  / kw:(ALL __ SEQUENCES __ IN __ SCHEMA __) schemas:list$ident {
+    return loc({ type: "grant_resource_all_sequences_in_schema", allSequencesInSchemaKw: read(kw), schemas });
+  }
+  / kw:(ALL __ (FUNCTIONS / PROCEDURES / ROUTINES) __ IN __ SCHEMA __) schemas:list$ident {
+    return loc({ type: "grant_resource_all_functions_in_schema", allFunctionsInSchemaKw: read(kw), schemas });
+  }
+  / kw:(SEQUENCE __) sequences:list$entity_name {
+    return loc({ type: "grant_resource_sequence", sequenceKw: read(kw), sequences });
+  }
+  / kw:(DATABASE __) databases:list$ident {
+    return loc({ type: "grant_resource_database", databaseKw: read(kw), databases });
+  }
+  / kw:(DOMAIN __) domains:list$entity_name {
+    return loc({ type: "grant_resource_domain", domainKw: read(kw), domains });
+  }
+  / kw:(FOREIGN __ DATA __ WRAPPER __) dataWrappers:list$ident {
+    return loc({ type: "grant_resource_foreign_data_wrapper", foreignDataWrapperKw: read(kw), dataWrappers });
+  }
+  / kw:(FOREIGN __ SERVER __) servers:list$ident {
+    return loc({ type: "grant_resource_foreign_server", foreignServerKw: read(kw), servers });
+  }
+  / kw:((FUNCTION / PROCEDURE / ROUTINE) __) functions:list$function_signature {
+    return loc({ type: "grant_resource_function", functionKw: read(kw), functions });
+  }
+  / kw:(LANGUAGE __) languages:list$ident {
+    return loc({ type: "grant_resource_language", languageKw: read(kw), languages });
+  }
+  / kw:(LARGE __ OBJECT __) oids:list$expr {
+    return loc({ type: "grant_resource_large_object", largeObjectKw: read(kw), oids });
+  }
+  / kw:(PARAMETER __) options:list$ident {
+    return loc({ type: "grant_resource_postgresql_option", parameterKw: read(kw), options });
+  }
+  / kw:(SCHEMA __) schemas:list$ident {
+    return loc({ type: "grant_resource_schema", schemaKw: read(kw), schemas });
+  }
+  / kw:(TABLESPACE __) tablespaces:list$ident {
+    return loc({ type: "grant_resource_tablespace", tablespaceKw: read(kw), tablespaces });
+  }
+  / kw:(TYPE __) types:list$entity_name {
+    return loc({ type: "grant_resource_type", typeKw: read(kw), types });
+  }
+  / kw:(TABLE __)? tables:list$entity_name {
+    return loc({ type: "grant_resource_table", tableKw: read(kw), tables });
+  }
+
+grant_resource_bigquery
+  = kw:(TABLE __ / EXTERNAL __ TABLE __) tables:list$entity_name {
+    return loc({ type: "grant_resource_table", tableKw: read(kw), tables });
+  }
+  / kw:(VIEW __) views:list$entity_name {
+    return loc({ type: "grant_resource_view", viewKw: read(kw), views });
+  }
+  / kw:(SCHEMA __) schemas:list$entity_name {
+    return loc({ type: "grant_resource_schema", schemaKw: read(kw), schemas });
+  }
+
+grant_stmt_clause
+  = with_grant_option_clause
+  / granted_by_clause
+
+with_grant_option_clause
+  = kw:(WITH __) nameKw:((GRANT / ADMIN / INHERIT / SET) __) value:(OPTION / boolean_literal) {
+    return loc({
+      type: "with_grant_option_clause",
+      withKw: read(kw),
+      nameKw: read(nameKw),
+      value,
+    });
+  }
+
+grant_option_for_clause
+  = nameKw:((GRANT / ADMIN / INHERIT / SET) __) optionForKw:(OPTION __ FOR __) {
+    return loc({
+      type: "grant_option_for_clause",
+      nameKw: read(nameKw),
+      optionForKw: read(optionForKw),
+    });
+  }
+
+granted_by_clause
+  = kw:(GRANTED __ BY __) role:grantee {
+    return loc({ type: "granted_by_clause", grantedByKw: read(kw), role });
+  }
 
 revoke_stmt
-  = kw:(REVOKE __) roles:(list$ident __)
-    onKw:(ON __) resType:(resource_type_kw __) resName:(entity_name __)
-    fromKw:(FROM __) users:(list$string_literal) {
+  = &postgres
+    kw:(REVOKE __) option:(grant_option_for_clause __)?
+    privileges:((list$privilege / all_privileges) __)
+    onKw:(ON __) resource:(grant_resource_postgres __)
+    fromKw:(FROM __) roles:list$grantee
+    grantedBy:(__ granted_by_clause)?
+    behaviorKw:(__ (CASCADE / RESTRICT))? {
       return loc({
-        type: "revoke_stmt",
+        type: "revoke_privilege_stmt",
         revokeKw: read(kw),
-        roles: read(roles),
+        option: read(option),
+        privileges: read(privileges),
         onKw: read(onKw),
-        resourceType: read(resType),
-        resourceName: read(resName),
+        resource: read(resource),
         fromKw: read(fromKw),
-        users,
+        roles,
+        grantedBy: read(grantedBy),
+        behaviorKw: read(behaviorKw),
       });
     }
-
-resource_type_kw
-  = SCHEMA
-  / TABLE
-  / VIEW
-  / kw:(EXTERNAL __ TABLE) { return read(kw); }
+  / &bigquery
+    kw:(REVOKE __) privileges:(list$ident __)
+    onKw:(ON __) resource:(grant_resource_bigquery __)
+    fromKw:(FROM __) roles:list$string_literal {
+      return loc({
+        type: "revoke_privilege_stmt",
+        revokeKw: read(kw),
+        privileges: read(privileges),
+        onKw: read(onKw),
+        resource: read(resource),
+        fromKw: read(fromKw),
+        roles,
+      });
+    }
+  / &postgres
+    kw:(REVOKE __)
+    option:(grant_option_for_clause __)?
+    grantedRoles:(list$ident __)
+    fromKw:(FROM __) granteeRoles:list$grantee
+    grantedBy:(__ granted_by_clause)?
+    behaviorKw:(__ (CASCADE / RESTRICT))? {
+      return loc({
+        type: "revoke_role_stmt",
+        revokeKw: read(kw),
+        option: read(option),
+        grantedRoles: read(grantedRoles),
+        fromKw: read(fromKw),
+        granteeRoles,
+        grantedBy: read(grantedBy),
+        behaviorKw: read(behaviorKw),
+      });
+    }
 
 /**
  * ------------------------------------------------------------------------------------ *
@@ -4564,6 +5177,25 @@ resource_type_kw
  *                                                                                      *
  * ------------------------------------------------------------------------------------ *
  */
+
+grantee
+  = kw:GROUP name:(__ ident) {
+    return loc({ type: "grantee_group", groupKw: kw, name: read(name) });
+  }
+  / kw:PUBLIC {
+    return loc({ type: "grantee_public", publicKw: kw });
+  }
+  / name:grantee_fn_name {
+    return loc({ type: "func_call", name });
+  }
+  / name:ident {
+    return name;
+  }
+
+grantee_fn_name
+  = kw:(CURRENT_ROLE / CURRENT_USER / SESSION_USER) {
+    return loc(createIdentifier(kw.text, kw.text));
+  }
 
 // user_name or CURRENT_USER, SESSION_USER, CURRENT_ROLE
 role_specification
@@ -5395,7 +6027,7 @@ column_constraint
 
 table_constraint
   = name:(constraint_name __)?
-    constraint:table_constraint_type
+    constraint:(table_constraint_type / x:constraint_not_null &postgres { return x; })
     modifiers:(__ constraint_modifier)* {
       if (!name && modifiers.length === 0) {
         return constraint;
@@ -7119,6 +7751,8 @@ list$expr = .
 list$expr_or_default = .
 list$expr_or_explicit_alias = .
 list$func_param = .
+list$function_signature = .
+list$grantee = .
 list$grouping_element = .
 list$ident = .
 list$index_specification = .
@@ -7128,6 +7762,7 @@ list$named_window = .
 list$number_literal = .
 list$partition_bound_from_to_value = .
 list$partition_bound_with_value = .
+list$privilege = .
 list$postgresql_option_element = .
 list$procedure_param = .
 list$reindex_option = .
@@ -7140,6 +7775,7 @@ list$string_literal = .
 list$table_func_call = .
 list$table_option_postgresql = .
 list$tablesample_arg = .
+list$transaction_mode = .
 list$transform_type = .
 list$trigger_transition = .
 list$type_param = .
@@ -8049,6 +8685,13 @@ only_mysql = &{ return isMysql(); } // 99% of MariaDB and MySQL syntax is the sa
 only_mariadb = &{ return isMariadb(); } // 99% of MariaDB and MySQL syntax is the same
 postgres = &{ return isPostgresql(); }
 
+unsupported_grammar_stmt = [^;]+ {
+  return loc({
+    type: "unsupported_grammar_stmt",
+    text: text(),
+  });
+}
+
 /**
  * Generic keyword rules
  */
@@ -8073,8 +8716,9 @@ ABORT               = kw:"ABORT"i               !ident_part { return loc(createK
 ACCESS              = kw:"ACCESS"i              !ident_part { return loc(createKeyword(kw)); }
 ACTION              = kw:"ACTION"i              !ident_part { return loc(createKeyword(kw)); }
 ADD                 = kw:"ADD"i                 !ident_part { return loc(createKeyword(kw)); }
+ADMIN               = kw:"ADMIN"i               !ident_part { return loc(createKeyword(kw)); }
 AFTER               = kw:"AFTER"i               !ident_part { return loc(createKeyword(kw)); }
-AGAINST             = kw:"AGAINST"              !ident_part { return loc(createKeyword(kw)); }
+AGAINST             = kw:"AGAINST"i             !ident_part { return loc(createKeyword(kw)); }
 ALGORITHM           = kw:"ALGORITHM"i           !ident_part { return loc(createKeyword(kw)); }
 ALL                 = kw:"ALL"i                 !ident_part { return loc(createKeyword(kw)); }
 ALTER               = kw:"ALTER"i               !ident_part { return loc(createKeyword(kw)); }
@@ -8116,6 +8760,7 @@ BREADTH             = kw:"BREADTH"i             !ident_part { return loc(createK
 BREAK               = kw:"BREAK"i               !ident_part { return loc(createKeyword(kw)); }
 BTREE               = kw:"BTREE"i               !ident_part { return loc(createKeyword(kw)); }
 BY                  = kw:"BY"i                  !ident_part { return loc(createKeyword(kw)); }
+BYPASSRLS           = kw:"BYPASSRLS"i           !ident_part { return loc(createKeyword(kw)); }
 BYTEINT             = kw:"BYTEINT"i             !ident_part { return loc(createKeyword(kw)); }
 BYTES               = kw:"BYTES"i               !ident_part { return loc(createKeyword(kw)); }
 CACHE               = kw:"CACHE"i               !ident_part { return loc(createKeyword(kw)); }
@@ -8127,6 +8772,7 @@ CASCADED            = kw:"CASCADED"i            !ident_part { return loc(createK
 CASE                = kw:"CASE"i                !ident_part { return loc(createKeyword(kw)); }
 CAST                = kw:"CAST"i                !ident_part { return loc(createKeyword(kw)); }
 CENTURY             = kw:"CENTURY"i             !ident_part { return loc(createKeyword(kw)); }
+CHAIN               = kw:"CHAIN"i               !ident_part { return loc(createKeyword(kw)); }
 CHANGE              = kw:"CHANGE"i              !ident_part { return loc(createKeyword(kw)); }
 CHAR                = kw:"CHAR"i                !ident_part { return loc(createKeyword(kw)); }
 CHARACTER           = kw:"CHARACTER"i           !ident_part { return loc(createKeyword(kw)); }
@@ -8143,11 +8789,13 @@ COLUMNS             = kw:"COLUMNS"i             !ident_part { return loc(createK
 COMMENT             = kw:"COMMENT"i             !ident_part { return loc(createKeyword(kw)); }
 COMMENTS            = kw:"COMMENTS"i            !ident_part { return loc(createKeyword(kw)); }
 COMMIT              = kw:"COMMIT"i              !ident_part { return loc(createKeyword(kw)); }
+COMMITTED           = kw:"COMMITTED"i           !ident_part { return loc(createKeyword(kw)); }
 COMPACT             = kw:"COMPACT"i             !ident_part { return loc(createKeyword(kw)); }
 COMPRESSED          = kw:"COMPRESSED"i          !ident_part { return loc(createKeyword(kw)); }
 COMPRESSION         = kw:"COMPRESSION"i         !ident_part { return loc(createKeyword(kw)); }
 CONCURRENTLY        = kw:"CONCURRENTLY"i        !ident_part { return loc(createKeyword(kw)); }
 CONFLICT            = kw:"CONFLICT"i            !ident_part { return loc(createKeyword(kw)); }
+CONNECT             = kw:"CONNECT"i             !ident_part { return loc(createKeyword(kw)); }
 CONNECTION          = kw:"CONNECTION"i          !ident_part { return loc(createKeyword(kw)); }
 CONSTRAINT          = kw:"CONSTRAINT"i          !ident_part { return loc(createKeyword(kw)); }
 CONSTRAINTS         = kw:"CONSTRAINTS"i         !ident_part { return loc(createKeyword(kw)); }
@@ -8156,6 +8804,8 @@ COPY                = kw:"COPY"i                !ident_part { return loc(createK
 COST                = kw:"COST"i                !ident_part { return loc(createKeyword(kw)); }
 COUNT               = kw:"COUNT"i               !ident_part { return loc(createKeyword(kw)); }
 CREATE              = kw:"CREATE"i              !ident_part { return loc(createKeyword(kw)); }
+CREATEDB            = kw:"CREATEDB"i            !ident_part { return loc(createKeyword(kw)); }
+CREATEROLE          = kw:"CREATEROLE"i          !ident_part { return loc(createKeyword(kw)); }
 CROSS               = kw:"CROSS"i               !ident_part { return loc(createKeyword(kw)); }
 CUBE                = kw:"CUBE"i                !ident_part { return loc(createKeyword(kw)); }
 CUME_DIST           = kw:"CUME_DIST"i           !ident_part { return loc(createKeyword(kw)); }
@@ -8174,10 +8824,10 @@ DATABASE            = kw:"DATABASE"i            !ident_part { return loc(createK
 DATE                = kw:"DATE"i                !ident_part { return loc(createKeyword(kw)); }
 DATETIME            = kw:"DATETIME"i            !ident_part { return loc(createKeyword(kw)); }
 DAY                 = kw:"DAY"i                 !ident_part { return loc(createKeyword(kw)); }
-DAY_HOUR            = kw:"DAY_HOUR"             !ident_part { return loc(createKeyword(kw)); }
-DAY_MICROSECOND     = kw:"DAY_MICROSECOND"      !ident_part { return loc(createKeyword(kw)); }
-DAY_MINUTE          = kw:"DAY_MINUTE"           !ident_part { return loc(createKeyword(kw)); }
-DAY_SECOND          = kw:"DAY_SECOND"           !ident_part { return loc(createKeyword(kw)); }
+DAY_HOUR            = kw:"DAY_HOUR"i            !ident_part { return loc(createKeyword(kw)); }
+DAY_MICROSECOND     = kw:"DAY_MICROSECOND"i     !ident_part { return loc(createKeyword(kw)); }
+DAY_MINUTE          = kw:"DAY_MINUTE"i          !ident_part { return loc(createKeyword(kw)); }
+DAY_SECOND          = kw:"DAY_SECOND"i          !ident_part { return loc(createKeyword(kw)); }
 DAYOFWEEK           = kw:"DAYOFWEEK"i           !ident_part { return loc(createKeyword(kw)); }
 DAYOFYEAR           = kw:"DAYOFYEAR"i           !ident_part { return loc(createKeyword(kw)); }
 DEC                 = kw:"DEC"i                 !ident_part { return loc(createKeyword(kw)); }
@@ -8220,6 +8870,7 @@ ELSE                = kw:"ELSE"i                !ident_part { return loc(createK
 ELSEIF              = kw:"ELSEIF"i              !ident_part { return loc(createKeyword(kw)); }
 ENABLE              = kw:"ENABLE"i              !ident_part { return loc(createKeyword(kw)); }
 ENCLOSED            = kw:"ENCLOSED"i            !ident_part { return loc(createKeyword(kw)); }
+ENCRYPTED           = kw:"ENCRYPTED"i           !ident_part { return loc(createKeyword(kw)); }
 ENCRYPTION          = kw:"ENCRYPTION"i          !ident_part { return loc(createKeyword(kw)); }
 END                 = kw:"END"i                 !ident_part { return loc(createKeyword(kw)); }
 ENFORCED            = kw:"ENFORCED"i            !ident_part { return loc(createKeyword(kw)); }
@@ -8268,12 +8919,14 @@ FROM                = kw:"FROM"i                !ident_part { return loc(createK
 FULL                = kw:"FULL"i                !ident_part { return loc(createKeyword(kw)); }
 FULLTEXT            = kw:"FULLTEXT"i            !ident_part { return loc(createKeyword(kw)); }
 FUNCTION            = kw:"FUNCTION"i            !ident_part { return loc(createKeyword(kw)); }
+FUNCTIONS           = kw:"FUNCTIONS"i           !ident_part { return loc(createKeyword(kw)); }
 GENERATED           = kw:"GENERATED"i           !ident_part { return loc(createKeyword(kw)); }
 GEOGRAPHY           = kw:"GEOGRAPHY"i           !ident_part { return loc(createKeyword(kw)); }
 GLOB                = kw:"GLOB"i                !ident_part { return loc(createKeyword(kw)); }
 GLOBAL              = kw:"GLOBAL"i              !ident_part { return loc(createKeyword(kw)); }
 GO                  = kw:"GO"i                  !ident_part { return loc(createKeyword(kw)); }
 GRANT               = kw:"GRANT"i               !ident_part { return loc(createKeyword(kw)); }
+GRANTED             = kw:"GRANTED"i             !ident_part { return loc(createKeyword(kw)); }
 GRANTS              = kw:"GRANTS"i              !ident_part { return loc(createKeyword(kw)); }
 GROUP               = kw:"GROUP"i               !ident_part { return loc(createKeyword(kw)); }
 GROUP_CONCAT        = kw:"GROUP_CONCAT"i        !ident_part { return loc(createKeyword(kw)); }
@@ -8283,9 +8936,9 @@ HASH                = kw:"HASH"i                !ident_part { return loc(createK
 HAVING              = kw:"HAVING"i              !ident_part { return loc(createKeyword(kw)); }
 HIGH_PRIORITY       = kw:"HIGH_PRIORITY"i       !ident_part { return loc(createKeyword(kw)); }
 HOUR                = kw:"HOUR"i                !ident_part { return loc(createKeyword(kw)); }
-HOUR_MICROSECOND    = kw:"HOUR_MICROSECOND"     !ident_part { return loc(createKeyword(kw)); }
-HOUR_MINUTE         = kw:"HOUR_MINUTE"          !ident_part { return loc(createKeyword(kw)); }
-HOUR_SECOND         = kw:"HOUR_SECOND"          !ident_part { return loc(createKeyword(kw)); }
+HOUR_MICROSECOND    = kw:"HOUR_MICROSECOND"i    !ident_part { return loc(createKeyword(kw)); }
+HOUR_MINUTE         = kw:"HOUR_MINUTE"i         !ident_part { return loc(createKeyword(kw)); }
+HOUR_SECOND         = kw:"HOUR_SECOND"i         !ident_part { return loc(createKeyword(kw)); }
 IDENTITY            = kw:"IDENTITY"i            !ident_part { return loc(createKeyword(kw)); }
 IF                  = kw:"IF"i                  !ident_part { return loc(createKeyword(kw)); }
 IGNORE              = kw:"IGNORE"i              !ident_part { return loc(createKeyword(kw)); }
@@ -8297,7 +8950,7 @@ INCLUDE             = kw:"INCLUDE"i             !ident_part { return loc(createK
 INCLUDING           = kw:"INCLUDING"i           !ident_part { return loc(createKeyword(kw)); }
 INCREMENT           = kw:"INCREMENT"i           !ident_part { return loc(createKeyword(kw)); }
 INDEX               = kw:"INDEX"i               !ident_part { return loc(createKeyword(kw)); }
-INDEXED             = kw:"INDEXED"              !ident_part { return loc(createKeyword(kw)); }
+INDEXED             = kw:"INDEXED"i             !ident_part { return loc(createKeyword(kw)); }
 INDEXES             = kw:"INDEXES"i             !ident_part { return loc(createKeyword(kw)); }
 INHERIT             = kw:"INHERIT"i             !ident_part { return loc(createKeyword(kw)); }
 INHERITS            = kw:"INHERITS"i            !ident_part { return loc(createKeyword(kw)); }
@@ -8319,8 +8972,9 @@ INTO                = kw:"INTO"i                !ident_part { return loc(createK
 INVISIBLE           = kw:"INVISIBLE"i           !ident_part { return loc(createKeyword(kw)); }
 INVOKER             = kw:"INVOKER"i             !ident_part { return loc(createKeyword(kw)); }
 IS                  = kw:"IS"i                  !ident_part { return loc(createKeyword(kw)); }
-ISNULL              = kw:"ISNULL"               !ident_part { return loc(createKeyword(kw)); }
+ISNULL              = kw:"ISNULL"i              !ident_part { return loc(createKeyword(kw)); }
 ISODOW              = kw:"ISODOW"i              !ident_part { return loc(createKeyword(kw)); }
+ISOLATION           = kw:"ISOLATION"i           !ident_part { return loc(createKeyword(kw)); }
 ISOWEEK             = kw:"ISOWEEK"i             !ident_part { return loc(createKeyword(kw)); }
 ISOYEAR             = kw:"ISOYEAR"i             !ident_part { return loc(createKeyword(kw)); }
 ITERATE             = kw:"ITERATE"i             !ident_part { return loc(createKeyword(kw)); }
@@ -8332,6 +8986,7 @@ KEY                 = kw:"KEY"i                 !ident_part { return loc(createK
 KEY_BLOCK_SIZE      = kw:"KEY_BLOCK_SIZE"i      !ident_part { return loc(createKeyword(kw)); }
 LAG                 = kw:"LAG"i                 !ident_part { return loc(createKeyword(kw)); }
 LANGUAGE            = kw:"LANGUAGE"i            !ident_part { return loc(createKeyword(kw)); }
+LARGE               = kw:"LARGE"i               !ident_part { return loc(createKeyword(kw)); }
 LAST                = kw:"LAST"i                !ident_part { return loc(createKeyword(kw)); }
 LAST_VALUE          = kw:"LAST_VALUE"i          !ident_part { return loc(createKeyword(kw)); }
 LATERAL             = kw:"LATERAL"i             !ident_part { return loc(createKeyword(kw)); }
@@ -8351,12 +9006,14 @@ LOCALTIMESTAMP      = kw:"LOCALTIMESTAMP"i      !ident_part { return loc(createK
 LOCK                = kw:"LOCK"i                !ident_part { return loc(createKeyword(kw)); }
 LOCKED              = kw:"LOCKED"i              !ident_part { return loc(createKeyword(kw)); }
 LOGGED              = kw:"LOGGED"i              !ident_part { return loc(createKeyword(kw)); }
+LOGIN               = kw:"LOGIN"i               !ident_part { return loc(createKeyword(kw)); }
 LOGS                = kw:"LOGS"i                !ident_part { return loc(createKeyword(kw)); }
 LONGBLOB            = kw:"LONGBLOB"i            !ident_part { return loc(createKeyword(kw)); }
 LONGTEXT            = kw:"LONGTEXT"i            !ident_part { return loc(createKeyword(kw)); }
 LOOP                = kw:"LOOP"i                !ident_part { return loc(createKeyword(kw)); }
 LOW_PRIORITY        = kw:"LOW_PRIORITY"i        !ident_part { return loc(createKeyword(kw)); }
 MAIN                = kw:"MAIN"i                !ident_part { return loc(createKeyword(kw)); }
+MAINTAIN            = kw:"MAINTAIN"i            !ident_part { return loc(createKeyword(kw)); }
 MASTER              = kw:"MASTER"i              !ident_part { return loc(createKeyword(kw)); }
 MATCH               = kw:"MATCH"i               !ident_part { return loc(createKeyword(kw)); }
 MATCHED             = kw:"MATCHED"i             !ident_part { return loc(createKeyword(kw)); }
@@ -8380,8 +9037,8 @@ MILLISECONDS        = kw:"MILLISECONDS"i        !ident_part { return loc(createK
 MIN                 = kw:"MIN"i                 !ident_part { return loc(createKeyword(kw)); }
 MIN_ROWS            = kw:"MIN_ROWS"i            !ident_part { return loc(createKeyword(kw)); }
 MINUTE              = kw:"MINUTE"i              !ident_part { return loc(createKeyword(kw)); }
-MINUTE_MICROSECOND  = kw:"MINUTE_MICROSECOND"   !ident_part { return loc(createKeyword(kw)); }
-MINUTE_SECOND       = kw:"MINUTE_SECOND"        !ident_part { return loc(createKeyword(kw)); }
+MINUTE_MICROSECOND  = kw:"MINUTE_MICROSECOND"i  !ident_part { return loc(createKeyword(kw)); }
+MINUTE_SECOND       = kw:"MINUTE_SECOND"i       !ident_part { return loc(createKeyword(kw)); }
 MINVALUE            = kw:"MINVALUE"i            !ident_part { return loc(createKeyword(kw)); }
 MOD                 = kw:"MOD"i                 !ident_part { return loc(createKeyword(kw)); }
 MODE                = kw:"MODE"i                !ident_part { return loc(createKeyword(kw)); }
@@ -8398,12 +9055,19 @@ NFD                 = kw:"NFD"i                 !ident_part { return loc(createK
 NFKC                = kw:"NFKC"i                !ident_part { return loc(createKeyword(kw)); }
 NFKD                = kw:"NFKD"i                !ident_part { return loc(createKeyword(kw)); }
 NO                  = kw:"NO"i                  !ident_part { return loc(createKeyword(kw)); }
+NOBYPASSRLS         = kw:"NOBYPASSRLS"i         !ident_part { return loc(createKeyword(kw)); }
 NOCHECK             = kw:"NOCHECK"i             !ident_part { return loc(createKeyword(kw)); }
+NOCREATEDB          = kw:"NOCREATEDB"i          !ident_part { return loc(createKeyword(kw)); }
+NOCREATEROLE        = kw:"NOCREATEROLE"i        !ident_part { return loc(createKeyword(kw)); }
+NOINHERIT           = kw:"NOINHERIT"i           !ident_part { return loc(createKeyword(kw)); }
+NOLOGIN             = kw:"NOLOGIN"i             !ident_part { return loc(createKeyword(kw)); }
 NONE                = kw:"NONE"i                !ident_part { return loc(createKeyword(kw)); }
+NOREPLICATION       = kw:"NOREPLICATION"i       !ident_part { return loc(createKeyword(kw)); }
 NORMALIZED          = kw:"NORMALIZED"i          !ident_part { return loc(createKeyword(kw)); }
+NOSUPERUSER         = kw:"NOSUPERUSER"i         !ident_part { return loc(createKeyword(kw)); }
 NOT                 = kw:"NOT"i                 !ident_part { return loc(createKeyword(kw)); }
 NOTHING             = kw:"NOTHING"i             !ident_part { return loc(createKeyword(kw)); }
-NOTNULL             = kw:"NOTNULL"              !ident_part { return loc(createKeyword(kw)); }
+NOTNULL             = kw:"NOTNULL"i             !ident_part { return loc(createKeyword(kw)); }
 NOWAIT              = kw:"NOWAIT"i              !ident_part { return loc(createKeyword(kw)); }
 NTH_VALUE           = kw:"NTH_VALUE"i           !ident_part { return loc(createKeyword(kw)); }
 NTILE               = kw:"NTILE"i               !ident_part { return loc(createKeyword(kw)); }
@@ -8411,6 +9075,7 @@ NULL                = kw:"NULL"i                !ident_part { return loc(createK
 NULLS               = kw:"NULLS"i               !ident_part { return loc(createKeyword(kw)); }
 NUMERIC             = kw:"NUMERIC"i             !ident_part { return loc(createKeyword(kw)); }
 NVARCHAR            = kw:"NVARCHAR"i            !ident_part { return loc(createKeyword(kw)); }
+OBJECT              = kw:"OBJECT"i              !ident_part { return loc(createKeyword(kw)); }
 OF                  = kw:"OF"i                  !ident_part { return loc(createKeyword(kw)); }
 OFF                 = kw:"OFF"i                 !ident_part { return loc(createKeyword(kw)); }
 OFFSET              = kw:"OFFSET"i              !ident_part { return loc(createKeyword(kw)); }
@@ -8438,12 +9103,14 @@ OWNED               = kw:"OWNED"i               !ident_part { return loc(createK
 OWNER               = kw:"OWNER"i               !ident_part { return loc(createKeyword(kw)); }
 PACK_KEYS           = kw:"PACK_KEYS"i           !ident_part { return loc(createKeyword(kw)); }
 PARALLEL            = kw:"PARALLEL"i            !ident_part { return loc(createKeyword(kw)); }
+PARAMETER           = kw:"PARAMETER"i           !ident_part { return loc(createKeyword(kw)); }
 PARSER              = kw:"PARSER"i              !ident_part { return loc(createKeyword(kw)); }
 PARTIAL             = kw:"PARTIAL"i             !ident_part { return loc(createKeyword(kw)); }
 PARTITION           = kw:"PARTITION"i           !ident_part { return loc(createKeyword(kw)); }
 PASSWORD            = kw:"PASSWORD"i            !ident_part { return loc(createKeyword(kw)); }
 PERCENT             = kw:"PERCENT"i             !ident_part { return loc(createKeyword(kw)); }
 PERCENT_RANK        = kw:"PERCENT_RANK"i        !ident_part { return loc(createKeyword(kw)); }
+PERMISSIVE          = kw:"PERMISSIVE"i          !ident_part { return loc(createKeyword(kw)); }
 PERSIST             = kw:"PERSIST"i             !ident_part { return loc(createKeyword(kw)); }
 PERSIST_ONLY        = kw:"PERSIST_ONLY"i        !ident_part { return loc(createKeyword(kw)); }
 PIVOT               = kw:"PIVOT"i               !ident_part { return loc(createKeyword(kw)); }
@@ -8456,8 +9123,11 @@ PRECEDING           = kw:"PRECEDING"i           !ident_part { return loc(createK
 PRECISION           = kw:"PRECISION"i           !ident_part { return loc(createKeyword(kw)); }
 PRESERVE            = kw:"PRESERVE"i            !ident_part { return loc(createKeyword(kw)); }
 PRIMARY             = kw:"PRIMARY"i             !ident_part { return loc(createKeyword(kw)); }
+PRIVILEGES          = kw:"PRIVILEGES"i          !ident_part { return loc(createKeyword(kw)); }
 PROCEDURE           = kw:"PROCEDURE"i           !ident_part { return loc(createKeyword(kw)); }
+PROCEDURES          = kw:"PROCEDURES"i          !ident_part { return loc(createKeyword(kw)); }
 PROJECT             = kw:"PROJECT"i             !ident_part { return loc(createKeyword(kw)); }
+PUBLIC              = kw:"PUBLIC"i              !ident_part { return loc(createKeyword(kw)); }
 QUALIFY             = kw:"QUALIFY"i             !ident_part { return loc(createKeyword(kw)); }
 QUARTER             = kw:"QUARTER"i             !ident_part { return loc(createKeyword(kw)); }
 QUERY               = kw:"QUERY"i               !ident_part { return loc(createKeyword(kw)); }
@@ -8467,7 +9137,7 @@ RANGE               = kw:"RANGE"i               !ident_part { return loc(createK
 RANK                = kw:"RANK"i                !ident_part { return loc(createKeyword(kw)); }
 READ                = kw:"READ"i                !ident_part { return loc(createKeyword(kw)); }
 REAL                = kw:"REAL"i                !ident_part { return loc(createKeyword(kw)); }
-RECURSIVE           = kw:"RECURSIVE"            !ident_part { return loc(createKeyword(kw)); }
+RECURSIVE           = kw:"RECURSIVE"i           !ident_part { return loc(createKeyword(kw)); }
 REDUNDANT           = kw:"REDUNDANT"i           !ident_part { return loc(createKeyword(kw)); }
 REFERENCES          = kw:"REFERENCES"i          !ident_part { return loc(createKeyword(kw)); }
 REFERENCING         = kw:"REFERENCING"i         !ident_part { return loc(createKeyword(kw)); }
@@ -8489,14 +9159,18 @@ RESPECT             = kw:"RESPECT"i             !ident_part { return loc(createK
 RESTART             = kw:"RESTART"i             !ident_part { return loc(createKeyword(kw)); }
 RESTRICT            = kw:"RESTRICT"i            !ident_part { return loc(createKeyword(kw)); }
 RESTRICTED          = kw:"RESTRICTED"i          !ident_part { return loc(createKeyword(kw)); }
+RESTRICTIVE         = kw:"RESTRICTIVE"i         !ident_part { return loc(createKeyword(kw)); }
 RETURN              = kw:"RETURN"i              !ident_part { return loc(createKeyword(kw)); }
 RETURNING           = kw:"RETURNING"i           !ident_part { return loc(createKeyword(kw)); }
 RETURNS             = kw:"RETURNS"i             !ident_part { return loc(createKeyword(kw)); }
 REVOKE              = kw:"REVOKE"i              !ident_part { return loc(createKeyword(kw)); }
 RIGHT               = kw:"RIGHT"i               !ident_part { return loc(createKeyword(kw)); }
 RLIKE               = kw:"RLIKE"i               !ident_part { return loc(createKeyword(kw)); }
+ROLE                = kw:"ROLE"i                !ident_part { return loc(createKeyword(kw)); }
 ROLLBACK            = kw:"ROLLBACK"i            !ident_part { return loc(createKeyword(kw)); }
 ROLLUP              = kw:"ROLLUP"i              !ident_part { return loc(createKeyword(kw)); }
+ROUTINE             = kw:"ROUTINE"i             !ident_part { return loc(createKeyword(kw)); }
+ROUTINES            = kw:"ROUTINES"i            !ident_part { return loc(createKeyword(kw)); }
 ROW                 = kw:"ROW"i                 !ident_part { return loc(createKeyword(kw)); }
 ROW_FORMAT          = kw:"ROW_FORMAT"i          !ident_part { return loc(createKeyword(kw)); }
 ROW_NUMBER          = kw:"ROW_NUMBER"i          !ident_part { return loc(createKeyword(kw)); }
@@ -8512,11 +9186,13 @@ SAVEPOINT           = kw:"SAVEPOINT"i           !ident_part { return loc(createK
 SCHEMA              = kw:"SCHEMA"i              !ident_part { return loc(createKeyword(kw)); }
 SEARCH              = kw:"SEARCH"i              !ident_part { return loc(createKeyword(kw)); }
 SECOND              = kw:"SECOND"i              !ident_part { return loc(createKeyword(kw)); }
-SECOND_MICROSECOND  = kw:"SECOND_MICROSECOND"   !ident_part { return loc(createKeyword(kw)); }
+SECOND_MICROSECOND  = kw:"SECOND_MICROSECOND"i  !ident_part { return loc(createKeyword(kw)); }
 SECONDARY_ENGINE_ATTRIBUTE = kw:"SECONDARY_ENGINE_ATTRIBUTE"i !ident_part { return loc(createKeyword(kw)); }
 SECURITY            = kw:"SECURITY"i            !ident_part { return loc(createKeyword(kw)); }
 SELECT              = kw:"SELECT"i              !ident_part { return loc(createKeyword(kw)); }
 SEQUENCE            = kw:"SEQUENCE"i            !ident_part { return loc(createKeyword(kw)); }
+SEQUENCES           = kw:"SEQUENCES"i           !ident_part { return loc(createKeyword(kw)); }
+SERIALIZABLE        = kw:"SERIALIZABLE"i        !ident_part { return loc(createKeyword(kw)); }
 SERVER              = kw:"SERVER"i              !ident_part { return loc(createKeyword(kw)); }
 SESSION             = kw:"SESSION"i             !ident_part { return loc(createKeyword(kw)); }
 SESSION_USER        = kw:"SESSION_USER"i        !ident_part { return loc(createKeyword(kw)); }
@@ -8558,8 +9234,10 @@ STRING              = kw:"STRING"i              !ident_part { return loc(createK
 STRUCT              = kw:"STRUCT"i              !ident_part { return loc(createKeyword(kw)); }
 SUM                 = kw:"SUM"i                 !ident_part { return loc(createKeyword(kw)); }
 SUNDAY              = kw:"SUNDAY"i              !ident_part { return loc(createKeyword(kw)); }
+SUPERUSER           = kw:"SUPERUSER"i           !ident_part { return loc(createKeyword(kw)); }
 SUPPORT             = kw:"SUPPORT"i             !ident_part { return loc(createKeyword(kw)); }
 SYMMETRIC           = kw:"SYMMETRIC"i           !ident_part { return loc(createKeyword(kw)); }
+SYSID               = kw:"SYSID"i               !ident_part { return loc(createKeyword(kw)); }
 SYSTEM              = kw:"SYSTEM"i              !ident_part { return loc(createKeyword(kw)); }
 SYSTEM_TIME         = kw:"SYSTEM_TIME"i         !ident_part { return loc(createKeyword(kw)); }
 SYSTEM_USER         = kw:"SYSTEM_USER"i         !ident_part { return loc(createKeyword(kw)); }
@@ -8594,6 +9272,7 @@ TUESDAY             = kw:"TUESDAY"i             !ident_part { return loc(createK
 TYPE                = kw:"TYPE"i                !ident_part { return loc(createKeyword(kw)); }
 UESCAPE             = kw:"UESCAPE"i             !ident_part { return loc(createKeyword(kw)); }
 UNBOUNDED           = kw:"UNBOUNDED"i           !ident_part { return loc(createKeyword(kw)); }
+UNCOMMITTED         = kw:"UNCOMMITTED"i         !ident_part { return loc(createKeyword(kw)); }
 UNDEFINED           = kw:"UNDEFINED"i           !ident_part { return loc(createKeyword(kw)); }
 UNION               = kw:"UNION"i               !ident_part { return loc(createKeyword(kw)); }
 UNIQUE              = kw:"UNIQUE"i              !ident_part { return loc(createKeyword(kw)); }
@@ -8601,11 +9280,12 @@ UNKNOWN             = kw:"UNKNOWN"i             !ident_part { return loc(createK
 UNLOCK              = kw:"UNLOCK"i              !ident_part { return loc(createKeyword(kw)); }
 UNLOGGED            = kw:"UNLOGGED"i            !ident_part { return loc(createKeyword(kw)); }
 UNNEST              = kw:"UNNEST"i              !ident_part { return loc(createKeyword(kw)); }
-UNPIVOT             = kw:"UNPIVOT"              !ident_part { return loc(createKeyword(kw)); }
+UNPIVOT             = kw:"UNPIVOT"i             !ident_part { return loc(createKeyword(kw)); }
 UNSAFE              = kw:"UNSAFE"i              !ident_part { return loc(createKeyword(kw)); }
 UNSIGNED            = kw:"UNSIGNED"i            !ident_part { return loc(createKeyword(kw)); }
 UNTIL               = kw:"UNTIL"i               !ident_part { return loc(createKeyword(kw)); }
 UPDATE              = kw:"UPDATE"i              !ident_part { return loc(createKeyword(kw)); }
+USAGE               = kw:"USAGE"i               !ident_part { return loc(createKeyword(kw)); }
 USE                 = kw:"USE"i                 !ident_part { return loc(createKeyword(kw)); }
 USER                = kw:"USER"i                !ident_part { return loc(createKeyword(kw)); }
 USING               = kw:"USING"i               !ident_part { return loc(createKeyword(kw)); }
@@ -8634,6 +9314,7 @@ WINDOW              = kw:"WINDOW"i              !ident_part { return loc(createK
 WITH                = kw:"WITH"i                !ident_part { return loc(createKeyword(kw)); }
 WITHOUT             = kw:"WITHOUT"i             !ident_part { return loc(createKeyword(kw)); }
 WORK                = kw:"WORK"i                !ident_part { return loc(createKeyword(kw)); }
+WRAPPER             = kw:"WRAPPER"i             !ident_part { return loc(createKeyword(kw)); }
 WRITE               = kw:"WRITE"i               !ident_part { return loc(createKeyword(kw)); }
 XOR                 = kw:"XOR"i                 !ident_part { return loc(createKeyword(kw)); }
 YEAR                = kw:"YEAR"i                !ident_part { return loc(createKeyword(kw)); }

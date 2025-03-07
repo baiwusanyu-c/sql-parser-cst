@@ -167,8 +167,22 @@ describe("trigger", () => {
     });
   });
 
-  dialect(["mysql", "mariadb", "sqlite"], () => {
-    describe("DROP TRIGGER", () => {
+  dialect("postgresql", () => {
+    describe("ALTER TRIGGER", () => {
+      it("supports RENAME TO", () => {
+        testWc("ALTER TRIGGER my_trg ON my_table RENAME TO my_trg_new");
+        testWc("ALTER TRIGGER my_trg ON schm.my_table RENAME TO my_trg_new");
+      });
+
+      it("supports [NO] DEPENDS ON EXTENSION", () => {
+        testWc("ALTER TRIGGER my_trg ON my_table DEPENDS ON EXTENSION my_ext");
+        testWc("ALTER TRIGGER my_trg ON my_table NO DEPENDS ON EXTENSION my_ext");
+      });
+    });
+  });
+
+  describe("DROP TRIGGER", () => {
+    dialect(["mysql", "mariadb", "sqlite"], () => {
       it("simple DROP TRIGGER statement", () => {
         testWc("DROP TRIGGER my_trg");
         testWc("DROP TRIGGER schemata.my_trg");
@@ -176,6 +190,22 @@ describe("trigger", () => {
 
       it("supports IF EXISTS", () => {
         testWc("DROP TRIGGER IF EXISTS my_trg");
+      });
+    });
+
+    dialect(["postgresql"], () => {
+      it("supports DROP TRIGGER .. ON ..", () => {
+        testWc("DROP TRIGGER my_trg ON my_tbl");
+        testWc("DROP TRIGGER my_trg ON schemata.my_tbl");
+      });
+
+      it("supports IF EXISTS", () => {
+        testWc("DROP TRIGGER IF EXISTS my_trg ON my_tbl");
+      });
+
+      it("supports CASCADE/RESTRICT", () => {
+        testWc("DROP TRIGGER my_trg ON my_tbl CASCADE");
+        testWc("DROP TRIGGER my_trg ON my_tbl RESTRICT");
       });
     });
   });

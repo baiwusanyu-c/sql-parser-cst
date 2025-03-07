@@ -24,6 +24,8 @@ import { MergeStmt } from "./Merge";
 import { TruncateStmt } from "./Truncate";
 import { UpdateStmt } from "./Update";
 import { AllPreparedStatements } from "./PreparedStatements";
+import { UnsupportedGrammarStmt } from "./UnsupportedGrammar";
+import { AllPolicyStatements } from "./Policy";
 
 export type Statement =
   | AllAlterTableStatements
@@ -31,6 +33,7 @@ export type Statement =
   | AllDclStatements
   | AllFunctionStatements
   | AllIndexStatements
+  | AllPolicyStatements
   | AllPreparedStatements
   | AllProceduralStatements
   | AllProcedureStatements
@@ -52,4 +55,5 @@ export type Statement =
   | MergeStmt
   | SelectStmt
   | TruncateStmt
-  | UpdateStmt;
+  | UpdateStmt
+  | UnsupportedGrammarStmt;

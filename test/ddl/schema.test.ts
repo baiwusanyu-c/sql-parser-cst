@@ -47,8 +47,10 @@ describe("schema", () => {
               CREATE VIEW my_view AS SELECT 1
               CREATE INDEX my_index ON my_table(id)
               CREATE SEQUENCE my_seq
+              GRANT SELECT ON TABLE my_table TO some_user
+              GRANT some_role TO some_user
+              CREATE TRIGGER my_trigger AFTER INSERT ON my_table FOR EACH ROW EXECUTE PROCEDURE my_func()
           `);
-          // TODO: CREATE TRIGGER, GRANT
         });
 
         it("supports optional schema name", () => {

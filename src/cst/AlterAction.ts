@@ -15,9 +15,11 @@ import { NumberLiteral, StringLiteral } from "./Literal";
 import {
   ConstraintCollate,
   ConstraintModifier,
+  ConstraintNotNull,
   TableConstraint,
 } from "./Constraint";
 import { Default } from "./Insert";
+import { RoleOption } from "./Role";
 import {
   PostgresqlTableOption,
   SequenceOption,
@@ -34,6 +36,7 @@ export type AllAlterActionNodes =
   | AlterFunctionAction
   | AlterTypeAction
   | AlterDomainAction
+  | AlterRoleAction
   | ToggleItem
   | ReplicaIdentityUsingIndex
   | SetDataTypeCollateClause
@@ -146,6 +149,22 @@ export type AlterDomainAction =
   | AlterActionDropConstraint
   | AlterActionAddConstraint;
 
+export type AlterRoleAction =
+  | AlterActionWithRoleOptions
+  | AlterActionRename
+  | AlterActionSetPostgresqlOption
+  | AlterActionSetPostgresqlOptionFromCurrent
+  | AlterActionResetPostgresqlOption
+  | AlterActionAddUser
+  | AlterActionDropUser;
+
+export type AlterTriggerAction =
+  | AlterActionRename
+  | AlterActionDependsOnExtension
+  | AlterActionNoDependsOnExtension;
+
+export type AlterPolicyAction = AlterActionRename;
+
 export interface AlterActionRename extends BaseNode {
   type: "alter_action_rename";
   renameKw: Keyword<"RENAME"> | [Keyword<"RENAME">, Keyword<"TO" | "AS">];
@@ -211,12 +230,35 @@ export interface AlterActionResetPostgresqlOptions extends BaseNode {
   options: ParenExpr<ListExpr<Identifier | MemberExpr>>;
 }
 
+// PostgreSQL
+export interface AlterActionSetPostgresqlOption extends BaseNode {
+  type: "alter_action_set_postgresql_option";
+  setKw: Keyword<"SET">;
+  name: Identifier;
+  operator: Keyword<"TO"> | "=";
+  value: Expr | Keyword;
+}
+
+export interface AlterActionSetPostgresqlOptionFromCurrent extends BaseNode {
+  type: "alter_action_set_postgresql_option_from_current";
+  setKw: Keyword<"SET">;
+  name: Identifier;
+  fromCurrentKw: [Keyword<"FROM">, Keyword<"CURRENT">];
+}
+
+// PostgreSQL
+export interface AlterActionResetPostgresqlOption extends BaseNode {
+  type: "alter_action_reset_postgresql_option";
+  resetKw: Keyword<"RESET">;
+  name: Identifier | Keyword<"ALL">;
+}
+
 // MySQL, MariaDB, PostgreSQL, BigQuery
 export interface AlterActionAddConstraint extends BaseNode {
   type: "alter_action_add_constraint";
   addKw: Keyword<"ADD">;
   name?: AlterActionAddConstraintConstraintName;
-  constraint: TableConstraint;
+  constraint: TableConstraint | ConstraintNotNull;
   modifiers: ConstraintModifier[];
 }
 
@@ -500,6 +542,27 @@ export interface AlterActionAlterAttribute extends BaseNode {
   dataType: DataType;
   constraint?: ConstraintCollate;
   behaviorKw?: Keyword<"CASCADE" | "RESTRICT">;
+}
+
+// PostgreSQL
+export interface AlterActionWithRoleOptions extends BaseNode {
+  type: "alter_action_with_role_options";
+  withKw: Keyword<"WITH">;
+  options: RoleOption[];
+}
+
+// PostgreSQL
+export interface AlterActionAddUser extends BaseNode {
+  type: "alter_action_add_user";
+  addUserKw: [Keyword<"ADD">, Keyword<"USER">];
+  users: ListExpr<Identifier>;
+}
+
+// PostgreSQL
+export interface AlterActionDropUser extends BaseNode {
+  type: "alter_action_drop_user";
+  dropUserKw: [Keyword<"DROP">, Keyword<"USER">];
+  users: ListExpr<Identifier>;
 }
 
 export type AlterColumnAction =

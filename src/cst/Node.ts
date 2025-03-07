@@ -9,6 +9,7 @@ export * from "./CreateTable";
 export * from "./DataType";
 export * from "./Dcl";
 export * from "./Delete";
+export * from "./Domain";
 export * from "./DropTable";
 export * from "./Explain";
 export * from "./Expr";
@@ -20,12 +21,14 @@ export * from "./Merge";
 export * from "./dialects/Mysql";
 export * from "./dialects/Postgresql";
 export * from "./OtherClauses";
+export * from "./Policy";
 export * from "./PreparedStatements";
 export * from "./ProcClause";
 export * from "./Procedure";
 export * from "./ProceduralLanguage";
 export * from "./Program";
 export * from "./RenameTable";
+export * from "./Role";
 export * from "./Schema";
 export * from "./Select";
 export * from "./Sequence";
@@ -34,6 +37,7 @@ export * from "./Statement";
 export * from "./Transaction";
 export * from "./Trigger";
 export * from "./Truncate";
+export * from "./Type";
 export * from "./Update";
 export * from "./View";
 export * from "./WindowFrame";
@@ -46,6 +50,7 @@ import { AllColumns, Keyword } from "./Base";
 import { AllConstraintNodes } from "./Constraint";
 import { AllCreateTableNodes } from "./CreateTable";
 import { AllDataTypeNodes } from "./DataType";
+import { AllDclNodes } from "./Dcl";
 import { AllDeleteNodes } from "./Delete";
 import { AllDomainNodes } from "./Domain";
 import { AllExprNodes } from "./Expr";
@@ -56,12 +61,14 @@ import { AllInsertNodes } from "./Insert";
 import { AllMergeNodes } from "./Merge";
 import { AllMysqlNodes } from "./dialects/Mysql";
 import { AllOtherClauses } from "./OtherClauses";
+import { AllPolicyNodes } from "./Policy";
 import { AllPostgresqlNodes } from "./dialects/Postgresql";
 import { AllPreparedStatementNodes } from "./PreparedStatements";
 import { AllProcClauseNodes } from "./ProcClause";
 import { AllProceduralNodes } from "./ProceduralLanguage";
 import { AllProcedureNodes } from "./Procedure";
 import { AllRenameTableNodes } from "./RenameTable";
+import { AllRoleNodes } from "./Role";
 import { AllSelectNodes } from "./Select";
 import { AllSequenceNodes } from "./Sequence";
 import { AllSqliteNodes } from "./dialects/Sqlite";
@@ -82,6 +89,7 @@ export type Node =
   | AllConstraintNodes
   | AllCreateTableNodes
   | AllDataTypeNodes
+  | AllDclNodes
   | AllDeleteNodes
   | AllDomainNodes
   | AllExprNodes
@@ -93,11 +101,13 @@ export type Node =
   | AllMysqlNodes
   | AllOtherClauses
   | AllPostgresqlNodes
+  | AllPolicyNodes
   | AllPreparedStatementNodes
   | AllProcClauseNodes
   | AllProceduralNodes
   | AllProcedureNodes
   | AllRenameTableNodes
+  | AllRoleNodes
   | AllSelectNodes
   | AllSequenceNodes
   | AllSqliteNodes

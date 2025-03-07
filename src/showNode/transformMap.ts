@@ -15,10 +15,12 @@ import { functionMap } from "./function";
 import { indexMap } from "./index";
 import { insertMap } from "./insert";
 import { mergeMap } from "./merge";
+import { policyMap } from "./policy";
 import { preparedStatementsMap } from "./prepared_statements";
 import { proceduralLanguageMap } from "./procedural_language";
 import { procedureMap } from "./procedure";
 import { procClauseMap } from "./proc_clause";
+import { roleMap } from "./role";
 import { schemaMap } from "./schema";
 import { selectMap } from "./select";
 import { sequenceMap } from "./sequence";
@@ -37,6 +39,7 @@ import { bigqueryMap } from "./dialects/bigquery";
 import { postgresqlMap } from "./dialects/postgresql";
 import { sqliteMap } from "./dialects/sqlite";
 import { mysqlMap } from "./dialects/mysql";
+import { unsupportedGrammarMap } from "./unsupported_grammar";
 
 export const transformMap: FullTransformMap<string> = {
   ...baseMap,
@@ -58,7 +61,7 @@ export const transformMap: FullTransformMap<string> = {
   ...dropTableMap,
   ...renameTableMap,
 
-  // CREATE/DROP/ALTER SCHEMA/VIEW/INDEX/TRIGGER/SEQUENCE/TYPE/DOMAIN
+  // CREATE/DROP/ALTER SCHEMA/VIEW/INDEX/TRIGGER/SEQUENCE/TYPE/DOMAIN/ROLE/POLICY
   ...schemaMap,
   ...viewMap,
   ...indexMap,
@@ -66,6 +69,8 @@ export const transformMap: FullTransformMap<string> = {
   ...sequenceMap,
   ...typeMap,
   ...domainMap,
+  ...roleMap,
+  ...policyMap,
 
   // CREATE/DROP FUNCTION/PROCEDURE
   ...functionMap,
@@ -90,4 +95,6 @@ export const transformMap: FullTransformMap<string> = {
   // Expressions
   ...exprMap,
   ...dataTypeMap,
+
+  ...unsupportedGrammarMap,
 };
