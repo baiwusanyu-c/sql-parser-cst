@@ -241,6 +241,11 @@ intersect_op
   = kws:(INTERSECT __ (ALL / DISTINCT)) { return read(kws); }
   / INTERSECT
 
+// ? 表示可选匹配
+// * 表示匹配0次或多次
+// &[condition] 表示正向断言，mysql = &{ return isMysql() || isMariadb(); }
+// 当 mysql 规则为真时，才 x:(into_variables_clause / into_dumpfile_clause / into_outfile_clause) { return x; }
+// / 表示或 statement / empty 就表示匹配 statement 或 empty 规则
 select_stmt
   = cte:(with_clause __)?
     select:(select_main_clause / paren$compound_select_stmt)
