@@ -1,16 +1,28 @@
+
+// 所有的 cst node 类型
 export * from "./cst/Node";
+// @public API
+// 生成一个在整个 CST 树中行走的函数，并在遇到具有该类型的节点时调用 map 中的函数。
 export * from "./cstVisitor";
+// @public API
+// cstTransformer，能够将 cst 转化为指定类型的对象，
 export * from "./cstTransformer";
+// 支持的语言关键字
 export * from "./keywords";
+// 解析器配置选项类型
 export { DialectName, ParserOptions } from "./ParserOptions";
+// 语法解析失败的错误捕获器
 export { FormattedSyntaxError } from "./FormattedSyntaxError";
 
-import { Node, Program } from "./cst/Node";
+import type { Node, Program } from "./cst/Node";
 import { parse as parseSql, PeggySyntaxError } from "./parser";
 import { show as showSql } from "./show";
-import { ParserOptions, validDialectNames } from "./ParserOptions";
+import { type ParserOptions, validDialectNames } from "./ParserOptions";
 import { FormattedSyntaxError } from "./FormattedSyntaxError";
 
+
+// 解析器导出
+// @public API
 export function parse(sql: string, options: ParserOptions): Program {
   if (!options || !options.dialect) {
     throw new Error(`No SQL dialect specified.`);
@@ -39,6 +51,7 @@ export function parse(sql: string, options: ParserOptions): Program {
  *
  *     { includeSpaces: true, includeComments: true, includeNewlines: true }
  */
+// @public API
 export function show(node: Node): string {
   // This might look like an unnecessary wrapper around show() from src/show.
   // The goal here is to restrict the input type to just Node,

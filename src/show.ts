@@ -6,6 +6,12 @@ import { isDefined, isString } from "./utils/generic";
 
 type NodeArray = (Node | NodeArray | string | undefined)[];
 
+/**
+ * 根据 cst node 返回 sql 语句
+ * @param node
+ * @param joinString
+ * @public api
+ */
 export function show(
   node: Node | NodeArray | string,
   joinString: string = ""

@@ -52,6 +52,8 @@ export function trailing<T extends BaseNode>(
 }
 
 /** Shorthand for attaching both trailing or leading whitespace */
+// 处理抽象语法树（AST）中的空白符（如空格、换行、注释等
+// 示例：SELECT |*此处有空格*| * FROM t → SELECT节点会附加leading: [space]
 export function surrounding<T extends BaseNode>(
   leadingWs: Whitespace[],
   node: T,

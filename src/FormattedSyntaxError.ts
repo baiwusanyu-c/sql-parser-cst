@@ -1,5 +1,6 @@
 import { Expectation, PeggySyntaxError } from "./parser";
 
+// 语法解析失败的错误捕获器
 export class FormattedSyntaxError extends Error {
   constructor(e: PeggySyntaxError, sql: string, filename?: string) {
     super(formatError(e, sql, filename));

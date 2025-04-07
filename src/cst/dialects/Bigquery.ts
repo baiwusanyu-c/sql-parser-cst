@@ -154,7 +154,7 @@ export interface AlterProjectStmt extends BaseNode {
   actions: AlterActionSetBigqueryOptions[];
 }
 
-// ALTER BI_CAPACITY
+// ALTER BI_CAPACITY dialects
 export interface AlterBiCapacityStmt extends BaseNode {
   type: "alter_bi_capacity_stmt";
   alterBiCapacityKw: [Keyword<"ALTER">, Keyword<"BI_CAPACITY">];
