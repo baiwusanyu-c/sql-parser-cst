@@ -29,6 +29,10 @@ export const sequenceMap: FullTransformMap<string, AllSequenceNodes> = {
   sequence_option_cycle: (node) => show(node.cycleKw),
   sequence_option_no_cycle: (node) => show(node.noCycleKw),
   sequence_option_owned_by: (node) => show([node.ownedByKw, node.owner]),
+  sequence_option_sequence_name: (node) =>
+    show([node.sequenceNameKw, node.name]),
+  sequence_option_logged: (node) => show(node.loggedKw),
+  sequence_option_unlogged: (node) => show(node.unloggedKw),
 
   // ALTER SEQUENCE
   alter_sequence_stmt: (node) =>

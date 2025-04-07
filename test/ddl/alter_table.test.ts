@@ -234,6 +234,14 @@ describe("alter table", () => {
           "ALTER COLUMN foo ADD GENERATED ALWAYS AS IDENTITY (START WITH 10 INCREMENT BY 5)"
         );
       });
+      // SEQUENCE NAME, LOGGED, UNLOGGED are not among the general sequence options
+      it("supports ADD GENERATED .. AS IDENTITY (special options ...)", () => {
+        testAlterWc(
+          "ALTER COLUMN foo ADD GENERATED ALWAYS AS IDENTITY (SEQUENCE NAME my_seq START WITH 10)"
+        );
+        testAlterWc("ALTER COLUMN foo ADD GENERATED ALWAYS AS IDENTITY (LOGGED)");
+        testAlterWc("ALTER COLUMN foo ADD GENERATED ALWAYS AS IDENTITY (UNLOGGED)");
+      });
 
       describe("alter identity column", () => {
         it("supports SET GENERATED", () => {
