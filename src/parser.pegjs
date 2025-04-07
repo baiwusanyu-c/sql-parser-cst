@@ -57,6 +57,7 @@ start
     return surrounding(c1, program, c2);
   }
 
+// / 表示或 statement / empty 就表示匹配 statement 或 empty 规则
 program
   = head:(statement / empty) tail:(__ ";" __ (statement / empty))* {
     return loc({
